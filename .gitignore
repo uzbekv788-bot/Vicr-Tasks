@@ -1,0 +1,11 @@
+node_modules
+.next
+.env
+.env.local
+*.db
+*.db-*
+next-env.d.ts
+*.tsbuildinfo
+*.zip
+artifact/
+AGENTS.md
