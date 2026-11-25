@@ -5,10 +5,18 @@ import { QUADRANTS } from "./types";
 
 /** Кандидаты по убыванию предпочтения; первая доступная модель кэшируется */
 // flash-lite — последний запасной вариант, когда полные flash-модели перегружены
-const MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
+const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", FALLBACK_MODEL];
 let resolvedModel: string | null = null;
 /** Таймаут на одну модель: зависшая модель уступает следующей */
 const PER_MODEL_TIMEOUT_MS = 15_000;
+/**
+ * Общий бюджет времени на запрос к ИИ. На Netlify функции обрываются через 10 с,
+ * поэтому там задаётся GEMINI_BUDGET_MS=8500. Часть бюджета резервируется под быструю flash-lite.
+ */
+const BUDGET_MS = Number(process.env.GEMINI_BUDGET_MS) || 40_000;
+const FALLBACK_RESERVE_MS = 3_000;
+const MIN_ATTEMPT_MS = 1_500;
 
 let ai: GoogleGenAI | null = null;
 function client(): GoogleGenAI {
@@ -51,8 +59,16 @@ async function generateJson<T>(opts: {
     ? [process.env.GEMINI_MODEL]
     : [...new Set([...(resolvedModel ? [resolvedModel] : []), ...MODEL_CANDIDATES])];
   let lastErr: unknown;
+  const deadline = Date.now() + BUDGET_MS;
 
   for (const model of models) {
+    const remaining = deadline - Date.now();
+    // Обычной модели оставляем запас под flash-lite; flash-lite получает всё оставшееся время
+    const timeout =
+      model === FALLBACK_MODEL || process.env.GEMINI_MODEL
+        ? remaining
+        : Math.min(PER_MODEL_TIMEOUT_MS, remaining - FALLBACK_RESERVE_MS);
+    if (timeout < MIN_ATTEMPT_MS) continue;
     try {
       const res = await client().models.generateContent({
         model,
@@ -63,7 +79,7 @@ async function generateJson<T>(opts: {
           responseJsonSchema: opts.jsonSchema,
           temperature: 0.2,
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          abortSignal: AbortSignal.timeout(PER_MODEL_TIMEOUT_MS),
+          abortSignal: AbortSignal.timeout(timeout),
         },
       });
       if (resolvedModel !== model) console.info(`[gemini] используется модель ${model}`);
@@ -86,6 +102,7 @@ async function generateJson<T>(opts: {
     }
   }
 
+  if (lastErr === undefined) throw new HttpError(504, "Gemini не ответил вовремя, попробуйте ещё раз");
   if (lastErr instanceof HttpError) throw lastErr;
   if (lastErr instanceof ApiError) {
     if (lastErr.status === 429) throw new HttpError(429, "Лимит запросов Gemini исчерпан, попробуйте позже");

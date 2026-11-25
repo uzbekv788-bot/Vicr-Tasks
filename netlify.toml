@@ -1,0 +1,7 @@
+# Netlify сам подключает адаптер Next.js (OpenNext) — плагин указывать не нужно
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
